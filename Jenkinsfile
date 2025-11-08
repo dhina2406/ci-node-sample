@@ -60,15 +60,42 @@ pipeline {
     }
 
     stage('Quality Gate') {
-      steps {
-        script {
-          timeout(time: 5, unit: 'MINUTES') {
-            // This waits for SonarCloud callback; will timeout if Jenkins isn't reachable.
-            waitForQualityGate abortPipeline: true
-          }
+  steps {
+    script {
+      echo "Checking SonarCloud Quality Gate status via API..."
+      def taskIdFile = readFile('report-task.txt').trim()
+      def ceTaskUrl = taskIdFile.readLines().find { it.startsWith('ceTaskUrl=') }?.split('=')[1]
+      if (!ceTaskUrl) {
+        error "Could not find ceTaskUrl in report-task.txt"
+      }
+
+      // Poll SonarCloud API for quality gate result
+      def gatePassed = false
+      for (int i = 0; i < 15; i++) {
+        sleep(time: 20, unit: 'SECONDS')
+        def response = httpRequest(
+          url: ceTaskUrl.replace("api/ce/task", "api/qualitygates/project_status"),
+          customHeaders: [[name: 'Authorization', value: "Bearer ${SONAR_TOKEN}"]],
+          validResponseCodes: '200'
+        )
+        if (response.content.contains('"status":"OK"')) {
+          echo "Quality gate PASSED ✅"
+          gatePassed = true
+          break
+        } else if (response.content.contains('"status":"ERROR"')) {
+          error "Quality gate FAILED ❌"
+        } else {
+          echo "Waiting for quality gate result..."
         }
       }
+
+      if (!gatePassed) {
+        error "Quality gate check timed out after waiting"
+      }
     }
+  }
+}
+
 
     stage('Docker Build') {
       steps {
