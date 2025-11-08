@@ -2,9 +2,9 @@ pipeline {
   agent any
 
   environment {
-    SONAR_TOKEN = credentials('sonar-token')        // SonarCloud token (secret text)
-    DOCKERHUB_CREDENTIALS = 'dockerhub-creds'       // DockerHub credentials id
-    DOCKERHUB_REPO = 'dhina2406/ci-node-sample'     // Docker Hub repo
+    SONAR_TOKEN = credentials('sonar-token')
+    DOCKERHUB_CREDENTIALS = 'dockerhub-creds'
+    DOCKERHUB_REPO = 'dhina2406/ci-node-sample'
   }
 
   options {
@@ -14,9 +14,7 @@ pipeline {
 
   stages {
     stage('Checkout') {
-      steps {
-        checkout scm
-      }
+      steps { checkout scm }
     }
 
     stage('Install & Test') {
@@ -47,6 +45,7 @@ pipeline {
                 -Dsonar.login=${SONAR_TOKEN}
               """
             } else {
+              // use Windows form with %SONAR_TOKEN% expanded by Jenkins credentials wrapper
               bat """
                 "${scannerHome}\\bin\\sonar-scanner.bat" ^
                 -Dsonar.projectKey=dhina2406_ci-node-sample ^
@@ -64,6 +63,7 @@ pipeline {
       steps {
         script {
           timeout(time: 5, unit: 'MINUTES') {
+            // This waits for SonarCloud callback; will timeout if Jenkins isn't reachable.
             waitForQualityGate abortPipeline: true
           }
         }
@@ -76,14 +76,14 @@ pipeline {
           try {
             def imageTag = "${env.DOCKERHUB_REPO}:${env.BUILD_NUMBER}"
             if (isUnix()) {
-              def img = docker.build(imageTag)
+              docker.build(imageTag)
               env.IMAGE_TAG = imageTag
             } else {
               bat "docker build -t ${env.DOCKERHUB_REPO}:${env.BUILD_NUMBER} ."
               env.IMAGE_TAG = "${env.DOCKERHUB_REPO}:${env.BUILD_NUMBER}"
             }
           } catch (err) {
-            error "Docker build failed or Docker not available on this agent: ${err}"
+            error "Docker build failed or Docker not available: ${err}"
           }
         }
       }
@@ -94,8 +94,7 @@ pipeline {
         script {
           try {
             docker.withRegistry('https://index.docker.io/v1/', DOCKERHUB_CREDENTIALS) {
-              def img = docker.image("${env.IMAGE_TAG}")
-              img.push()
+              docker.image("${env.IMAGE_TAG}").push()
             }
           } catch (err) {
             if (isUnix()) {
@@ -118,7 +117,7 @@ pipeline {
               bat "docker run -d --rm -p 3000:3000 --name ci_node_${env.BUILD_NUMBER} ${env.IMAGE_TAG}"
             }
           } catch (err) {
-            echo "Deploy step skipped/failed (Docker may not be available): ${err}"
+            echo "Deploy skipped/failed (Docker not available): ${err}"
           }
         }
       }
