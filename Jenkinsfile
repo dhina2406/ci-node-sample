@@ -51,11 +51,11 @@ pipeline {
             } else {
               bat """
                 "${scannerHome}\\bin\\sonar-scanner.bat" ^
-                -Dsonar.projectKey=dhina2406_ci-node-sample ^
-                -Dsonar.organization=dhina2406 ^
-                -Dsonar.sources=. ^
-                -Dsonar.login=%SONAR_TOKEN% ^
-                -Dsonar.scanner.metadataFile=report-task.txt
+  -Dsonar.projectKey=dhina2406_ci-node-sample ^
+  -Dsonar.organization=dhina2406 ^
+  -Dsonar.sources=. ^
+  -Dsonar.login=%SONAR_TOKEN% ^
+  -Dsonar.scanner.metadataFile=%WORKSPACE%\\report-task.txt
               """
             }
           }
