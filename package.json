@@ -1,0 +1,15 @@
+{
+  "name": "ci-node-sample",
+  "version": "1.0.0",
+  "description": "Simple Node.js app for CI/CD + SonarCloud + Docker demo",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "mocha"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "mocha": "^10.2.0"
+  }
+}
