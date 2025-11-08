@@ -23,10 +23,10 @@ pipeline {
       steps {
         script {
           if (isUnix()) {
-            sh 'npm ci'
+            sh 'npm install'
             sh 'npm test'
           } else {
-            bat 'npm ci'
+            bat 'npm install'
             bat 'npm test'
           }
         }
