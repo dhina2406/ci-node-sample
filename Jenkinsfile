@@ -2,17 +2,22 @@ pipeline {
   agent any
 
   environment {
-    SONAR_TOKEN = credentials('sonar-token')        // SonarCloud token (secret text)
-    DOCKERHUB_CREDENTIALS = 'dockerhub-creds'       // DockerHub credentials id
-    DOCKERHUB_REPO = 'dhina2406/ci-node-sample'     // change if needed
+    // Bind Sonar token as secret text (create credential in Jenkins with id 'sonar-token')
+    SONAR_TOKEN = credentials('sonar-token')
+    // DockerHub credentials id (username/password type)
+    DOCKERHUB_CREDS_ID = 'dockerhub-creds'
+    // Docker repo to push to (change if needed)
+    DOCKERHUB_REPO = 'dhina2406/ci-node-sample'
   }
 
   options {
     buildDiscarder(logRotator(daysToKeepStr: '7', numToKeepStr: '10'))
     timestamps()
+    // optional: you can add timeout to long stages if you want
   }
 
   stages {
+
     stage('Checkout') {
       steps {
         checkout scm
@@ -21,92 +26,67 @@ pipeline {
 
     stage('Install & Test') {
       steps {
-        script {
-          if (isUnix()) {
-            bat 'npm install'
-            bat 'npm test'
-          } else {
-            bat 'npm install'
-            bat 'npm test'
-          }
-        }
+        // Windows: use bat
+        bat 'npm install'
+        // run your test script - adjust if you use "npm test"
+        bat 'npm test'
       }
     }
 
-    stage('SonarCloud Analysis') {
+    stage('SonarScanner (Windows)') {
       steps {
         script {
-          // ensure SonarScanner tool exists in Jenkins Tools (name: SonarScanner)
+          // SonarScanner must be configured in Manage Jenkins -> Global Tool Configuration as "SonarScanner"
           def scannerHome = tool 'SonarScanner'
+          // withSonarQubeEnv requires a SonarQube server configured in Jenkins (name: SonarCloud)
           withSonarQubeEnv('SonarCloud') {
-            if (isUnix()) {
-              sh """
-                ${scannerHome}/bin/sonar-scanner \
-                -Dsonar.projectKey=dhina2406_ci-node-sample \
-                -Dsonar.organization=dhina2406 \
-                -Dsonar.sources=. \
-                -Dsonar.login=${SONAR_TOKEN} \
-                -Dsonar.scanner.metadataFile=report-task.txt
-              """
-            } else {
-              bat """
-                "${scannerHome}\\bin\\sonar-scanner.bat" ^
-  -Dsonar.projectKey=dhina2406_ci-node-sample ^
-  -Dsonar.organization=dhina2406 ^
-  -Dsonar.sources=. ^
-  -Dsonar.login=%SONAR_TOKEN% ^
-  -Dsonar.scanner.metadataFile=%WORKSPACE%\\report-task.txt
-              """
-            }
+            // Run the Windows scanner .bat, write metadata report-task.txt into workspace
+            bat """
+              "${scannerHome}\\bin\\sonar-scanner.bat" ^
+              -Dsonar.projectKey=dhina2406_ci-node-sample ^
+              -Dsonar.organization=dhina2406 ^
+              -Dsonar.sources=. ^
+              -Dsonar.login=%SONAR_TOKEN% ^
+              -Dsonar.scanner.metadataFile=%WORKSPACE%\\report-task.txt
+            """
           }
 
-          // print report-task.txt content for debugging
-          script {
-            if (isUnix()) {
-              sh 'echo "---- report-task.txt ----" || true; cat report-task.txt || true; echo "------------------------"'
-            } else {
-              bat 'echo ---- report-task.txt ---- & type report-task.txt || echo not-found & echo ------------------------'
-            }
-          }
+          // Show report-task.txt (helpful for debugging)
+          bat 'echo ---- report-task.txt ---- & if exist report-task.txt type report-task.txt || echo not-found & echo ------------------------'
         }
       }
     }
 
-    stage('Quality Gate (poll SonarCloud)') {
+    stage('Quality Gate (poll Sonar)') {
       steps {
         script {
-          // Read report-task.txt and extract ceTaskUrl or taskId
-          def txt
+          // Read report-task.txt and extract ceTaskUrl
+          def report = ''
           try {
-            txt = readFile('report-task.txt')
+            report = readFile('report-task.txt')
           } catch (err) {
             error "report-task.txt not found in workspace: ${err}"
           }
 
           def ceTaskUrl = null
-          txt.readLines().each { line ->
+          report.readLines().each { line ->
             if (line.startsWith('ceTaskUrl=')) {
               ceTaskUrl = line.split('=')[1].trim()
             }
           }
 
           if (!ceTaskUrl) {
-            error "ceTaskUrl not found inside report-task.txt; cannot poll SonarCloud"
+            error "ceTaskUrl not found inside report-task.txt; cannot poll Sonar CE"
           }
 
           echo "Found ceTaskUrl: ${ceTaskUrl}"
 
-          // Derive quality gate API endpoint from CE URL:
-          // Some installations: ceTaskUrl -> https://sonarcloud.io/api/ce/task?id=... 
-          // We will call project_status endpoint: https://sonarcloud.io/api/qualitygates/project_status?projectKey=...
-          // But report-task.txt might not contain projectKey — we will poll CE to get analysisId then query project_status by analysisId.
-          // Strategy: poll CE until status = SUCCESS, use analysisId -> call api/qualitygates/project_status?analysisId=<analysisId>
+          // Poll CE task until complete and get analysisId
           def analysisId = null
           def ceStatus = null
-
-          // Poll CE task until it completes (max tries)
           int maxTries = 30
           int delaySeconds = 6
+
           for (int i = 0; i < maxTries; i++) {
             sleep(time: delaySeconds, unit: 'SECONDS')
             echo "Polling CE task status (attempt ${i+1}/${maxTries})..."
@@ -127,15 +107,16 @@ pipeline {
             } else if (ceStatus == 'FAILED' || ceStatus == 'CANCELED') {
               error "Sonar CE task ended with status: ${ceStatus}"
             }
-            // otherwise continue waiting
           }
 
           if (!analysisId) {
             error "analysisId not found after polling CE task; cannot determine quality gate"
           }
 
-          // Now call project_status with analysisId
-          def qgUrl = "${ceTaskUrl.replaceAll(/api\\/ce\\/task.*\$/, 'api/qualitygates/project_status')}?analysisId=${URLEncoder.encode(analysisId, 'UTF-8')}"
+          // Call quality gate API by analysisId
+          // Derive base URL from ceTaskUrl to build project_status endpoint
+          def base = ceTaskUrl.replaceAll(/api\\/ce\\/task.*/, '')
+          def qgUrl = "${base}api/qualitygates/project_status?analysisId=${URLEncoder.encode(analysisId, 'UTF-8')}"
           echo "Querying quality gate at: ${qgUrl}"
 
           def qgResp = httpRequest(
@@ -156,63 +137,44 @@ pipeline {
       }
     }
 
-    stage('Docker Build') {
+    stage('Docker Build (Windows CLI)') {
       steps {
         script {
-          try {
-            def imageTag = "${env.DOCKERHUB_REPO}:${env.BUILD_NUMBER}"
-            if (isUnix()) {
-              def img = docker.build(imageTag)
-              env.IMAGE_TAG = imageTag
-            } else {
-              // Windows - use Docker CLI
-              bat "docker build -t ${env.DOCKERHUB_REPO}:${env.BUILD_NUMBER} ."
-              env.IMAGE_TAG = "${env.DOCKERHUB_REPO}:${env.BUILD_NUMBER}"
-            }
-            echo "Docker image built: ${env.IMAGE_TAG}"
-          } catch (err) {
-            error "Docker build failed or Docker not available on this agent: ${err}"
-          }
+          def tag = "${env.DOCKERHUB_REPO}:${env.BUILD_NUMBER}"
+          // Build with Docker CLI on Windows host
+          bat "docker build -t ${tag} ."
+          // store for later stages
+          env.IMAGE_TAG = tag
+          echo "Docker image built: ${env.IMAGE_TAG}"
         }
       }
     }
 
-    stage('Docker Push') {
+    stage('Docker Push (login with Jenkins creds)') {
       steps {
         script {
-          try {
-            // Use docker.withRegistry if docker plugin available and Docker CLI is logged in
-            docker.withRegistry('https://index.docker.io/v1/', DOCKERHUB_CREDENTIALS) {
-              def img = docker.image("${env.IMAGE_TAG}")
-              img.push()
-            }
-            echo "Docker image pushed: ${env.IMAGE_TAG}"
-          } catch (err) {
-            // Fallback to CLI push (requires docker login to be setup on agent)
-            echo "docker.withRegistry failed or plugin not available, attempting CLI push..."
-            if (isUnix()) {
-              sh "docker push ${env.IMAGE_TAG}"
-            } else {
-              bat "docker push ${env.IMAGE_TAG}"
-            }
-            echo "Docker CLI push attempted for: ${env.IMAGE_TAG}"
+          // Use Jenkins username/password credentials to login to DockerHub
+          withCredentials([usernamePassword(credentialsId: env.DOCKERHUB_CREDS_ID, usernameVariable: 'DH_USER', passwordVariable: 'DH_PSW')]) {
+            // login, tag is already the repo:tag format
+            bat 'docker login -u %DH_USER% -p %DH_PSW%'
+            bat "docker push ${env.IMAGE_TAG}"
+            // optional: docker logout
+            bat 'docker logout'
           }
+          echo "Docker image pushed: ${env.IMAGE_TAG}"
         }
       }
     }
 
-    stage('Deploy (local)') {
+    stage('Deploy (docker run on Jenkins host)') {
       steps {
         script {
+          // run detached, expose 3000 locally (adjust port if your app uses a different port)
           try {
-            if (isUnix()) {
-              sh "docker run -d --rm -p 3000:3000 --name ci_node_${env.BUILD_NUMBER} ${env.IMAGE_TAG}"
-            } else {
-              bat "docker run -d --rm -p 3000:3000 --name ci_node_${env.BUILD_NUMBER} ${env.IMAGE_TAG}"
-            }
-            echo "Deployment (docker run) attempted for ${env.IMAGE_TAG}"
+            bat "docker run -d --rm -p 3000:3000 --name ci_node_${env.BUILD_NUMBER} ${env.IMAGE_TAG}"
+            echo "Deployment attempted for ${env.IMAGE_TAG}"
           } catch (err) {
-            echo "Deploy step skipped/failed (Docker may not be available): ${err}"
+            echo "Deploy step failed/skipped: ${err}"
           }
         }
       }
